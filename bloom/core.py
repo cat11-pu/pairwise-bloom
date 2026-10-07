@@ -50,7 +50,7 @@ def _steps(key, nbits, k):
     """The positions one key occupies: first + step * second, modulo nbits."""
     first = fnv1a64(key)
     second = mix64(first ^ SPLITMIX_SALT) | 1
-    return [(first + step * second) % nbits for step in range(1, k)]
+    return [(first + step * second) % nbits for step in range(k)]
 
 
 def _check_capacity(capacity):
@@ -98,7 +98,7 @@ class BitMap:
     def _check_position(self, position):
         if isinstance(position, bool) or not isinstance(position, int):
             raise TypeError("position must be an int")
-        if position < 0 or position > self.nbits:
+        if position < 0 or position >= self.nbits:
             raise ValueError("position %r is outside the bitmap" % (position,))
         return position
 
@@ -116,7 +116,7 @@ class BitMap:
         """Turn the bit at position off and leave its byte mates alone."""
         position = self._check_position(position)
         index = position >> 3
-        self._bytes[index] |= 0xFF ^ (1 << (position & 7))
+        self._bytes[index] &= 0xFF ^ (1 << (position & 7))
 
     def clear(self):
         """Drop every bit, keeping the same buffer for reuse."""
@@ -125,8 +125,11 @@ class BitMap:
 
     def count(self):
         """How many bits are currently set."""
-        whole = self.nbits // 8
-        return sum(_popcount(value) for value in self._bytes[:whole])
+        total = sum(_popcount(value) for value in self._bytes)
+        remainder = self.nbits % 8
+        if remainder:
+            total -= _popcount(self._bytes[-1] >> remainder << remainder)
+        return total
 
     def to_bytes(self):
         """The raw backing bytes."""
@@ -155,7 +158,7 @@ class BloomFilter:
 
     def contains(self, key):
         """Whether key is very likely to have been recorded."""
-        return any(self._bits.get_bit(position) for position in self.positions(key))
+        return all(self._bits.get_bit(position) for position in self.positions(key))
 
     def bits_set(self):
         """How many bits of the bitmap are on."""
@@ -203,6 +206,8 @@ class CountingBloomFilter:
 
     def remove(self, key):
         """Drop one occurrence of key and report whether it was there."""
+        if not self.contains(key):
+            return False
         for position in self.positions(key):
             self._counters[position] -= 1
         self.count -= 1
@@ -275,7 +280,6 @@ class GrowingBloomFilter:
         grown = BloomFilter(capacity, self.error_rate)
         for key in self._keys:
             grown.add(key)
-        self._keys.clear()
         self.capacity = capacity
         self._filter = grown
         self.rebuilds += 1
@@ -320,6 +324,6 @@ class DedupWindow:
         self._used += 1
 
     def _advance(self):
-        self._slots[self._cursor].reset()
         self._cursor = (self._cursor + 1) % len(self._slots)
+        self._slots[self._cursor].reset()
         self._used = 0
